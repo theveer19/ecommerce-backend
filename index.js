@@ -32,19 +32,30 @@ app.get('/', (req, res) => {
 // Create Razorpay order
 app.post('/create-order', async (req, res) => {
   try {
-    const { amount } = req.body;
+    let { amount } = req.body; // amount from frontend is usually in INR (like 100.50)
+
+    // Convert to paise (smallest unit)
+    amount = Math.round(amount * 100);
+
+    // Optional: validate amount is within allowed Razorpay limits
+    if (amount <= 0 || amount > 100000000) {
+      return res.status(400).json({ error: 'Invalid amount for Razorpay order' });
+    }
+
     const options = {
-      amount: amount * 100, // amount in paise
+      amount: amount, // paise
       currency: 'INR',
       receipt: `receipt_${Date.now()}`,
     };
+
     const order = await razorpay.orders.create(options);
     res.json(order);
-  } catch (error) {
-    console.error('Failed to create Razorpay order:', error);
-    res.status(500).json({ error: 'Failed to create Razorpay order' });
+  } catch (err) {
+    console.error('Failed to create Razorpay order:', err);
+    res.status(500).send({ error: 'Failed to create Razorpay order' });
   }
 });
+
 
 // Save order to Supabase
 app.post('/save-order', async (req, res) => {
