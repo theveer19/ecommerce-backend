@@ -34,7 +34,7 @@ app.post('/create-order', async (req, res) => {
       return res.status(400).json({ error: 'Invalid amount' });
     }
 
-    amount = Math.round(amount); // Convert INR to paise
+    amount = Math.round(amount * 100); // Convert INR to paise
 
     // Razorpay max amount check (₹1,00,000 approx)
     if (amount > 10000000) {
