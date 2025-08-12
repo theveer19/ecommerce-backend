@@ -54,6 +54,34 @@ app.post('/create-order', async (req, res) => {
   }
 });
 
+// Save Order to Supabase
+app.post('/save-order', async (req, res) => {
+  const { userId, items, totalAmount, paymentMethod, paymentStatus } = req.body;
+
+  if (!userId || !items || items.length === 0 || !totalAmount) {
+    return res.status(400).json({ error: 'Missing required order details' });
+  }
+
+  const { data, error } = await supabase
+    .from('orders')
+    .insert([{
+      user_id: userId,
+      items: items,
+      total_amount: totalAmount,
+      payment_method: paymentMethod,
+      payment_status: paymentStatus,
+      created_at: new Date()
+    }]);
+
+  if (error) {
+    console.error('Supabase order save error:', error);
+    return res.status(500).json({ error: 'Failed to save order' });
+  }
+
+  res.json({ success: true, order: data });
+});
+
+
 // Example fix for Supabase query expecting one row
 app.get('/user-role/:id', async (req, res) => {
   const { id } = req.params;
