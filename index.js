@@ -1,106 +1,150 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const Razorpay = require('razorpay');
-const { createClient } = require('@supabase/supabase-js');
+// index.js
+require("dotenv").config();
+const express = require("express");
+const cors = require("cors");
+const Razorpay = require("razorpay");
+const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 
-app.use(cors({
-  origin: ['http://localhost:3000', 'ecommerce-frontend-taupe-mu.vercel.app'], // your frontend URLs here
-  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-}));
+// --- CONFIGURE CORS ---
+// Add your frontend hosts here (development and deployed)
+const ALLOWED_ORIGINS = [
+  "http://localhost:3000",
+  "https://your-frontend.vercel.app", // <- replace with your deployed frontend
+  "https://ecommerce-frontend-taupe-mu.vercel.app", // optional example
+];
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // allow requests with no origin (mobile apps, curl, Postman)
+      if (!origin) return callback(null, true);
+      if (ALLOWED_ORIGINS.indexOf(origin) === -1) {
+        const msg = `The CORS policy for this site does not allow access from the specified Origin: ${origin}`;
+        return callback(new Error(msg), false);
+      }
+      return callback(null, true);
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+
 app.use(express.json());
 
-// Supabase client
+// --- SUPABASE CLIENT ---
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
+  console.warn("⚠️ SUPABASE_URL or SUPABASE_ANON_KEY missing in .env");
+}
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
-// Razorpay client
+// --- RAZORPAY CLIENT ---
+if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+  console.warn("⚠️ RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET missing in .env");
+}
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-app.get('/', (req, res) => {
-  res.send('✅ Backend is working!');
+// --- Health check ---
+app.get("/", (req, res) => {
+  res.json({ ok: true, message: "Backend is working" });
 });
 
-// Create Razorpay order
-app.post('/create-order', async (req, res) => {
+// --- Create Razorpay order ---
+// Expects JSON body: { amount: <number in INR, e.g. 499.99> }
+app.post("/create-order", async (req, res) => {
   try {
-    let { amount } = req.body;  // amount in INR, e.g. 100.50
+    let { amount } = req.body;
 
-    if (!amount || typeof amount !== 'number' || amount <= 0) {
-      return res.status(400).json({ error: 'Invalid amount' });
+    if (amount === undefined || amount === null) {
+      return res.status(400).json({ error: "Missing 'amount' in request body" });
     }
 
-    amount = Math.round(amount * 100); // Convert INR to paise
-
-    // Razorpay max amount check (₹1,00,000 approx)
-    if (amount > 10000000) {
-      return res.status(400).json({ error: 'Amount exceeds maximum amount allowed.' });
+    if (typeof amount === "string") amount = parseFloat(amount);
+    if (isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ error: "'amount' must be a positive number (INR)" });
     }
 
-    const order = await razorpay.orders.create({
-      amount,
-      currency: 'INR',
+    // Convert INR to paise (integer)
+    const paise = Math.round(amount * 100);
+
+    // Simple limit check (avoid accidentally huge amounts)
+    const MAX_PAISA = 10000000; // 1,00,000 INR
+    if (paise > MAX_PAISA) {
+      return res.status(400).json({ error: "Amount exceeds maximum allowed" });
+    }
+
+    const options = {
+      amount: paise,
+      currency: "INR",
       receipt: `receipt_${Date.now()}`,
-    });
+      payment_capture: 1, // auto-capture
+    };
 
-    res.json(order);
-  } catch (error) {
-    console.error('Failed to create Razorpay order:', error);
-    res.status(500).json({ error: 'Failed to create Razorpay order' });
+    const order = await razorpay.orders.create(options);
+    // order contains id, amount, currency, etc.
+    return res.json(order);
+  } catch (err) {
+    console.error("Failed to create Razorpay order:", err && err);
+    return res.status(500).json({ error: "Failed to create Razorpay order", details: err?.message || err });
   }
 });
 
-// Save Order to Supabase
-app.post('/save-order', async (req, res) => {
-  const { userId, items, totalAmount, paymentMethod, paymentStatus } = req.body;
+// --- Save order to Supabase ---
+// Expects JSON body: { userId, items, totalAmount, paymentMethod, paymentStatus, paymentId? }
+// Adjust table/column names to match your Supabase schema (orders table fields).
+app.post("/save-order", async (req, res) => {
+  try {
+    const { userId, items, totalAmount, paymentMethod, paymentStatus, paymentId } = req.body;
 
-  if (!userId || !items || items.length === 0 || !totalAmount) {
-    return res.status(400).json({ error: 'Missing required order details' });
-  }
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "Missing or invalid 'items' (array) in request body" });
+    }
+    if (totalAmount === undefined || totalAmount === null) {
+      return res.status(400).json({ error: "Missing 'totalAmount' in request body" });
+    }
 
-  const { data, error } = await supabase
-    .from('orders')
-    .insert([{
-      user_id: userId,
-      items: items,
+    const payload = {
+      user_id: userId || null,
+      items,
       total_amount: totalAmount,
-      payment_method: paymentMethod,
-      payment_status: paymentStatus,
-      created_at: new Date()
-    }]);
+      payment_method: paymentMethod || null,
+      payment_status: paymentStatus || null,
+      payment_id: paymentId || null,
+      created_at: new Date().toISOString(),
+    };
 
-  if (error) {
-    console.error('Supabase order save error:', error);
-    return res.status(500).json({ error: 'Failed to save order' });
+    const { data, error } = await supabase.from("orders").insert([payload]).select().single();
+
+    if (error) {
+      console.error("Supabase insert error:", error);
+      return res.status(500).json({ error: "Failed to save order", details: error });
+    }
+
+    return res.json({ success: true, order: data });
+  } catch (err) {
+    console.error("Error in /save-order:", err);
+    return res.status(500).json({ error: "Failed to save order", details: err?.message || err });
   }
-
-  res.json({ success: true, order: data });
 });
 
-
-// Example fix for Supabase query expecting one row
-app.get('/user-role/:id', async (req, res) => {
-  const { id } = req.params;
-  const { data, error } = await supabase
-    .from('roles')
-    .select('*')
-    .eq('id', id)
-    .maybeSingle(); // safer than single()
-
-  if (error) {
-    return res.status(500).json({ error });
+// --- Optional: simple products route (example) ---
+app.get("/products", async (req, res) => {
+  try {
+    const { data, error } = await supabase.from("products").select("*");
+    if (error) return res.status(500).json({ error });
+    return res.json(data);
+  } catch (err) {
+    console.error("Products fetch error:", err);
+    return res.status(500).json({ error: "Failed to fetch products" });
   }
-  if (!data) {
-    return res.status(404).json({ error: 'Role not found' });
-  }
-  res.json(data);
 });
 
-// Your products routes here (unchanged)
-
+// --- Start server ---
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
