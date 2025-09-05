@@ -12,7 +12,10 @@ const app = express();
 const ALLOWED_ORIGINS = [
   "http://localhost:3000",
   "https://your-frontend.vercel.app", // <- replace with your deployed frontend
-  "https://ecommerce-frontend-taupe-mu.vercel.app", // optional example
+  "https://ecommerce-frontend-taupe-mu.vercel.app",
+  "https://www.onet.co.in/",
+  
+  // optional example
 ];
 
 app.use(
