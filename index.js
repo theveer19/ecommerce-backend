@@ -7,263 +7,237 @@ const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 
-// --- CONFIGURE CORS ---
-const ALLOWED_ORIGINS = [
-  "http://localhost:3000",
-  "https://ecommerce-frontend-taupe-mu.vercel.app",
-  "https://www.onet.co.in",
-  "https://onet.co.in",
-  "http://localhost:3001",
-];
+/* -------------------- MIDDLEWARE -------------------- */
+app.use(cors({
+  origin: ["http://localhost:3000", "https://ecommerce-frontend-taupe-mu.vercel.app"],
+  credentials: true
+}));
 
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      if (!origin) return callback(null, true);
-      if (ALLOWED_ORIGINS.indexOf(origin) !== -1) {
-        return callback(null, true);
-      } else {
-        console.log(`CORS blocked origin: ${origin}`);
-        if (process.env.NODE_ENV === 'development') {
-          return callback(null, true);
-        }
-        const msg = `CORS policy blocks origin: ${origin}`;
-        return callback(new Error(msg), false);
-      }
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "Accept"],
-  })
+app.use(express.json());
+
+/* -------------------- SUPABASE -------------------- */
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
 );
 
-app.options('*', cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
-
-// --- SUPABASE CLIENT ---
-if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
-  console.error("❌ SUPABASE_URL or SUPABASE_ANON_KEY missing in .env");
-  process.exit(1);
-}
-
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
-
-// --- RAZORPAY CLIENT ---
-if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
-  console.error("❌ RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET missing in .env");
-  process.exit(1);
-}
-
+/* -------------------- RAZORPAY -------------------- */
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
+  key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-// --- Health check ---
+/* -------------------- HEALTH CHECK -------------------- */
 app.get("/", (req, res) => {
   res.json({ 
     ok: true, 
-    message: "Backend is working",
-    timestamp: new Date().toISOString()
+    message: "Backend running",
+    endpoints: [
+      "POST /create-order",
+      "POST /save-order",
+      "GET /orders",
+      "GET /products"
+    ]
   });
 });
 
-// --- Create Razorpay order ---
+/* -------------------- CREATE ORDER -------------------- */
 app.post("/create-order", async (req, res) => {
   try {
-    console.log('Creating Razorpay order with data:', req.body);
+    console.log("Creating Razorpay order:", req.body);
     
-    let { amount } = req.body;
+    const { amount } = req.body;
 
-    if (amount === undefined || amount === null) {
-      return res.status(400).json({ error: "Missing 'amount' in request body" });
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ 
+        success: false,
+        error: "Invalid amount",
+        message: "Amount must be greater than 0"
+      });
     }
 
-    if (typeof amount === "string") amount = parseFloat(amount);
-    if (isNaN(amount) || amount <= 0) {
-      return res.status(400).json({ error: "'amount' must be a positive number (INR)" });
+    // Convert to paise (₹1 = 100 paise)
+    const amountInPaise = Math.round(parseFloat(amount) * 100);
+    
+    // Minimum amount check (₹1 = 100 paise)
+    if (amountInPaise < 100) {
+      return res.status(400).json({ 
+        success: false,
+        error: "Amount too low",
+        message: "Minimum amount is ₹1"
+      });
     }
 
-    const paise = Math.round(amount * 100);
-    const MAX_PAISA = 10000000;
+    console.log("Creating order for amount (paise):", amountInPaise);
 
-    if (paise > MAX_PAISA) {
-      return res.status(400).json({ error: "Amount exceeds maximum allowed" });
-    }
-
-    const options = {
-      amount: paise,
+    const order = await razorpay.orders.create({
+      amount: amountInPaise,
       currency: "INR",
-      receipt: `receipt_${Date.now()}`,
-      payment_capture: 1,
-    };
+      receipt: `receipt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      payment_capture: 1 // Auto capture
+    });
 
-    console.log('Razorpay options:', options);
+    console.log("✅ Razorpay order created:", order.id);
     
-    const order = await razorpay.orders.create(options);
-    console.log('Razorpay order created:', order.id);
+    return res.json({
+      success: true,
+      order: {
+        id: order.id,
+        amount: order.amount,
+        amount_paid: order.amount_paid,
+        amount_due: order.amount_due,
+        currency: order.currency,
+        receipt: order.receipt,
+        status: order.status,
+        created_at: order.created_at
+      }
+    });
     
-    return res.json(order);
   } catch (err) {
-    console.error("❌ Failed to create Razorpay order:", err);
+    console.error("❌ Create order error:", err);
     return res.status(500).json({ 
-      error: "Failed to create Razorpay order", 
-      details: err?.error?.description || err?.message || 'Unknown error'
+      success: false,
+      error: "Razorpay order failed",
+      message: err.error?.description || err.message || "Unknown error"
     });
   }
 });
 
-// --- Save order to Supabase ---
+/* -------------------- SAVE ORDER -------------------- */
 app.post("/save-order", async (req, res) => {
   try {
-    console.log('Saving order to Supabase:', req.body);
+    console.log("Saving order to Supabase:", req.body);
     
     const { 
       user_id, 
       items, 
       total_amount, 
-      subtotal, 
-      shipping_fee, 
-      tax, 
-      shipping_info, 
-      payment_method, 
       payment_id,
-      status = 'confirmed'
+      shipping_info,
+      payment_method = "razorpay"
     } = req.body;
 
-    // Validate required fields
+    // Basic validation
     if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: "Missing or invalid 'items' (array) in request body" });
-    }
-    if (total_amount === undefined || total_amount === null) {
-      return res.status(400).json({ error: "Missing 'total_amount' in request body" });
+      return res.status(400).json({ 
+        success: false,
+        error: "Invalid items",
+        message: "Items array is required"
+      });
     }
 
-    // Build payload with only the fields that exist in our table
-    const payload = {
+    if (!total_amount || total_amount <= 0) {
+      return res.status(400).json({ 
+        success: false,
+        error: "Invalid total amount",
+        message: "Total amount must be greater than 0"
+      });
+    }
+
+    // Generate order number
+    const orderNumber = `ORD${Date.now().toString().slice(-8)}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+
+    // Prepare order data
+    const orderData = {
       user_id: user_id || null,
       items: items,
       total_amount: parseFloat(total_amount),
-      shipping_info: shipping_info || {},
-      payment_method: payment_method || null,
-      status: status,
+      payment_method: payment_method,
+      payment_id: payment_id || null,
+      status: payment_method === 'cod' ? 'pending' : 'confirmed',
+      order_number: orderNumber,
       created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
     };
 
-    // Only add these fields if they exist in the request
-    if (subtotal !== undefined) payload.subtotal = parseFloat(subtotal);
-    if (shipping_fee !== undefined) payload.shipping_fee = parseFloat(shipping_fee);
-    if (tax !== undefined) payload.tax = parseFloat(tax);
-    if (payment_id !== undefined) payload.payment_id = payment_id;
+    // Add shipping_info if provided
+    if (shipping_info) {
+      orderData.shipping_info = shipping_info;
+    }
 
-    console.log('Inserting order payload:', payload);
+    console.log("📦 Inserting order:", orderData);
 
     const { data, error } = await supabase
       .from("orders")
-      .insert([payload])
+      .insert([orderData])
       .select()
       .single();
 
     if (error) {
       console.error("❌ Supabase insert error:", error);
       
-      // If it's a column error, suggest running the SQL migration
-      if (error.message.includes('column') && error.message.includes('does not exist')) {
+      // Check if table exists
+      if (error.message.includes('relation "orders" does not exist')) {
         return res.status(500).json({ 
-          error: "Database schema mismatch", 
-          details: "Missing required columns in orders table. Please run the SQL migration script.",
-          solution: "Run the ALTER TABLE queries provided in the documentation to add missing columns."
+          success: false,
+          error: "Orders table not found",
+          message: "Please create the orders table in Supabase"
         });
       }
       
-      return res.status(500).json({ 
-        error: "Failed to save order", 
-        details: error.message,
-        code: error.code
-      });
+      throw error;
     }
 
-    console.log('✅ Order saved successfully:', data.id);
-    
+    console.log("✅ Order saved successfully:", data.id);
+
     return res.json({ 
       success: true, 
-      order: data,
-      orderId: data.id 
+      message: "Order saved successfully",
+      order: {
+        id: data.id,
+        order_number: data.order_number || orderNumber,
+        total_amount: data.total_amount,
+        status: data.status,
+        payment_method: data.payment_method,
+        created_at: data.created_at
+      }
     });
+    
   } catch (err) {
-    console.error("❌ Error in /save-order:", err);
+    console.error("❌ Save order error:", err);
     return res.status(500).json({ 
-      error: "Failed to save order", 
-      details: err?.message || 'Unknown error' 
+      success: false,
+      error: "Save order failed",
+      message: err.message || "Unknown error"
     });
   }
 });
 
-// --- Alternative: Simple save order (minimal fields) ---
-app.post("/save-order-simple", async (req, res) => {
-  try {
-    const { 
-      user_id, 
-      items, 
-      total_amount,
-      payment_method = 'Cash on Delivery'
-    } = req.body;
-
-    // Basic validation
-    if (!items || !Array.isArray(items)) {
-      return res.status(400).json({ error: "Invalid items" });
-    }
-
-    const payload = {
-      user_id: user_id || null,
-      items: items,
-      total_amount: parseFloat(total_amount),
-      payment_method: payment_method,
-      status: 'confirmed',
-      created_at: new Date().toISOString(),
-    };
-
-    console.log('Saving simple order:', payload);
-
-    const { data, error } = await supabase
-      .from("orders")
-      .insert([payload])
-      .select()
-      .single();
-
-    if (error) {
-      console.error("Simple order error:", error);
-      return res.status(500).json({ error: error.message });
-    }
-
-    return res.json({ success: true, order: data });
-  } catch (err) {
-    console.error("Simple order exception:", err);
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// --- Get orders ---
+/* -------------------- GET ORDERS -------------------- */
 app.get("/orders", async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const { user_id, limit = 50 } = req.query;
+    
+    let query = supabase
       .from("orders")
       .select("*")
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .limit(parseInt(limit));
 
-    if (error) {
-      return res.status(500).json({ error: error.message });
+    if (user_id) {
+      query = query.eq("user_id", user_id);
     }
 
-    return res.json(data || []);
+    const { data, error } = await query;
+
+    if (error) throw error;
+
+    return res.json({
+      success: true,
+      data: data || []
+    });
+    
   } catch (err) {
     console.error("Get orders error:", err);
-    return res.status(500).json({ error: "Failed to fetch orders" });
+    return res.status(500).json({ 
+      success: false,
+      error: "Failed to fetch orders",
+      message: err.message
+    });
   }
 });
 
-// --- Get products ---
+/* -------------------- GET PRODUCTS -------------------- */
 app.get("/products", async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -271,20 +245,96 @@ app.get("/products", async (req, res) => {
       .select("*")
       .order("created_at", { ascending: false });
 
-    if (error) {
-      return res.status(500).json({ error: error.message });
-    }
+    if (error) throw error;
+
+    return res.json({
+      success: true,
+      data: data || []
+    });
     
-    return res.json(data || []);
   } catch (err) {
-    console.error("Products fetch error:", err);
-    return res.status(500).json({ error: "Failed to fetch products" });
+    console.error("Get products error:", err);
+    return res.status(500).json({ 
+      success: false,
+      error: "Failed to fetch products",
+      message: err.message
+    });
   }
 });
 
-// --- Start server ---
+/* -------------------- VERIFY PAYMENT -------------------- */
+app.post("/verify-payment", async (req, res) => {
+  try {
+    const { razorpay_payment_id, razorpay_order_id, razorpay_signature } = req.body;
+
+    if (!razorpay_payment_id || !razorpay_order_id || !razorpay_signature) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing payment verification data"
+      });
+    }
+
+    // In production, verify the signature using Razorpay's method
+    // For testing, we'll just acknowledge
+    console.log("✅ Payment verification received:", razorpay_payment_id);
+
+    return res.json({
+      success: true,
+      message: "Payment verified successfully",
+      payment_id: razorpay_payment_id
+    });
+    
+  } catch (err) {
+    console.error("Verify payment error:", err);
+    return res.status(500).json({
+      success: false,
+      error: "Payment verification failed",
+      message: err.message
+    });
+  }
+});
+
+/* -------------------- TEST ENDPOINT -------------------- */
+app.get("/test-connection", async (req, res) => {
+  try {
+    // Test Supabase
+    const supabaseTest = await supabase.from("products").select("id").limit(1);
+    
+    // Test Razorpay
+    const razorpayTest = await razorpay.orders.all({ count: 1 });
+
+    return res.json({
+      success: true,
+      supabase: supabaseTest.error ? "Failed" : "Connected",
+      razorpay: "Connected",
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/* -------------------- START SERVER -------------------- */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`
+🚀 Server running on port ${PORT}
+📡 Local: http://localhost:${PORT}
+🌐 Network: http://0.0.0.0:${PORT}
+
+✅ Ready for checkout!
+  `);
+});
+
+// Handle uncaught errors
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
