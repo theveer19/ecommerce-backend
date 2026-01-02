@@ -9,7 +9,9 @@ const app = express();
 
 /* -------------------- MIDDLEWARE -------------------- */
 app.use(cors({
-  origin: ["http://localhost:3000", "https://ecommerce-frontend-taupe-mu.vercel.app"],
+  origin: ["http://localhost:3000", "https://ecommerce-frontend-taupe-mu.vercel.app","https://onet.co.in",
+  "https://www.onet.co.in", "http://127.0.0.1:3000",
+  "http://10.204.161.58:3000" ],
   credentials: true
 }));
 
@@ -44,64 +46,43 @@ app.get("/", (req, res) => {
 /* -------------------- CREATE ORDER -------------------- */
 app.post("/create-order", async (req, res) => {
   try {
-    console.log("Creating Razorpay order:", req.body);
-    
+    console.log("➡️ Create-order request:", req.body);
+
     const { amount } = req.body;
 
-    if (!amount || amount <= 0) {
-      return res.status(400).json({ 
-        success: false,
-        error: "Invalid amount",
-        message: "Amount must be greater than 0"
-      });
+    if (!amount || isNaN(amount) || amount <= 0) {
+      console.error("❌ Invalid amount:", amount);
+      return res.status(400).json({ error: "Invalid amount" });
     }
 
-    // Convert to paise (₹1 = 100 paise)
-    const amountInPaise = Math.round(parseFloat(amount) * 100);
-    
-    // Minimum amount check (₹1 = 100 paise)
-    if (amountInPaise < 100) {
-      return res.status(400).json({ 
-        success: false,
-        error: "Amount too low",
-        message: "Minimum amount is ₹1"
-      });
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+      console.error("❌ Razorpay env missing");
+      return res.status(500).json({ error: "Payment config missing" });
     }
 
-    console.log("Creating order for amount (paise):", amountInPaise);
+    const razorpay = new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET,
+    });
 
     const order = await razorpay.orders.create({
-      amount: amountInPaise,
+      amount: Math.round(Number(amount) * 100),
       currency: "INR",
-      receipt: `receipt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      payment_capture: 1 // Auto capture
+      receipt: `receipt_${Date.now()}`,
     });
 
     console.log("✅ Razorpay order created:", order.id);
-    
-    return res.json({
-      success: true,
-      order: {
-        id: order.id,
-        amount: order.amount,
-        amount_paid: order.amount_paid,
-        amount_due: order.amount_due,
-        currency: order.currency,
-        receipt: order.receipt,
-        status: order.status,
-        created_at: order.created_at
-      }
-    });
-    
+
+    return res.json(order);
   } catch (err) {
-    console.error("❌ Create order error:", err);
-    return res.status(500).json({ 
-      success: false,
+    console.error("❌ Razorpay create-order failed:", err);
+    return res.status(500).json({
       error: "Razorpay order failed",
-      message: err.error?.description || err.message || "Unknown error"
+      details: err?.error?.description || err?.message,
     });
   }
 });
+
 
 /* -------------------- SAVE ORDER -------------------- */
 app.post("/save-order", async (req, res) => {
