@@ -74,13 +74,23 @@ app.post("/create-order", async (req, res) => {
     console.log("✅ Razorpay order created:", order.id);
 
     return res.json(order);
-  } catch (err) {
-    console.error("❌ Razorpay create-order failed:", err);
-    return res.status(500).json({
-      error: "Razorpay order failed",
-      details: err?.error?.description || err?.message,
-    });
-  }
+  }catch (err) {
+  console.error("❌ Save order FULL ERROR:", {
+    message: err.message,
+    details: err.details,
+    hint: err.hint,
+    code: err.code,
+  });
+
+  return res.status(500).json({
+    success: false,
+    error: err.message,
+    details: err.details,
+    hint: err.hint,
+    code: err.code,
+  });
+}
+
 });
 
 
