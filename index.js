@@ -27,7 +27,6 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 /* -------------------- SUPABASE INIT (SERVICE ROLE) -------------------- */
-// ✅ CRITICAL: Use SERVICE_ROLE_KEY to bypass RLS policies during order creation
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY 
@@ -103,9 +102,10 @@ app.post("/save-order", async (req, res) => {
         return res.status(400).json({ success: false, error: "Items required" });
     }
     
-    // ✅ Extract Razorpay IDs correctly
-    const actualPaymentId = payment_id?.payment_id || (typeof payment_id === 'string' ? payment_id : null);
-    const razorpayOrderId = payment_id?.order_id || null;
+    // ✅ CRITICAL FIX: Safe ID Extraction for COD vs Razorpay
+    // If Razorpay, extract from object. If COD, ensure null.
+    const actualPaymentId = payment_method === 'razorpay' ? payment_id?.payment_id : null;
+    const razorpayOrderId = payment_method === 'razorpay' ? payment_id?.order_id : null;
 
     // Prepare Order Data
     const orderData = {
@@ -117,11 +117,10 @@ app.post("/save-order", async (req, res) => {
       
       payment_method,
       payment_id: actualPaymentId, 
-      razorpay_order_id: razorpayOrderId, // ✅ Saving this for verification lookup
+      razorpay_order_id: razorpayOrderId, 
       
       status: payment_method === 'cod' ? 'pending' : 'confirmed',
       
-      // ✅ Mapping frontend shipping_info to DB shipping_address JSONB column
       shipping_address: {
         name: `${shipping_info.firstName} ${shipping_info.lastName}`.trim(),
         email: shipping_info.email,
@@ -195,7 +194,6 @@ app.post("/verify-payment", async (req, res) => {
     if (expectedSignature === razorpay_signature) {
       console.log("✅ Payment Verified:", razorpay_payment_id);
       
-      // ✅ Update using razorpay_order_id which we saved earlier
       const { error } = await supabase
         .from('orders')
         .update({ 
@@ -246,6 +244,5 @@ app.get("/orders", async (req, res) => {
   }
 });
 
-/* -------------------- SERVER START -------------------- */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));
