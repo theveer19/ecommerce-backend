@@ -15,7 +15,7 @@ app.use(cors({
     "https://onet.co.in",
     "https://www.onet.co.in", 
     "http://127.0.0.1:3000",
-    "http://10.204.161.58:3000"
+    "http://10.127.149.58:3000"
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
