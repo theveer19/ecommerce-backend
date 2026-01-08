@@ -15,8 +15,7 @@ app.use(cors({
     "https://onet.co.in",
     "https://www.onet.co.in", 
     "http://127.0.0.1:3000",
-    "http://10.127.149.58:3000"
-  
+    "http://10.204.161.58:3000"
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -72,7 +71,6 @@ app.get("/", (req, res) => {
     endpoints: {
       payment: "POST /create-order",
       orders: "POST /save-order, GET /orders",
-      products: "GET /products",
       verification: "POST /verify-payment"
     }
   });
@@ -108,7 +106,7 @@ app.post("/create-order", async (req, res) => {
     
     console.log("✅ Razorpay order created:", order.id);
     
-    // Return order details in expected format
+    // Return order details
     return res.json({
       success: true,
       id: order.id,
@@ -147,7 +145,6 @@ app.post("/save-order", async (req, res) => {
   
   try {
     console.log("💾 Saving order to database...");
-    console.log("Order data received:", JSON.stringify(req.body, null, 2));
     
     const {
       user_id,
@@ -172,17 +169,6 @@ app.post("/save-order", async (req, res) => {
       });
     }
     
-    // Check database connection
-    const { data: connectionTest, error: connectionError } = await supabase
-      .from('orders')
-      .select('count', { count: 'exact', head: true });
-      
-    if (connectionError) {
-      throw new Error(`Database connection failed: ${connectionError.message}`);
-    }
-    
-    console.log("✅ Database connection verified");
-    
     // Start transaction: Create order record
     const orderData = {
       user_id: user_id || null,
@@ -205,7 +191,7 @@ app.post("/save-order", async (req, res) => {
       }
     };
     
-    console.log("📝 Inserting order data:", orderData);
+    console.log("📝 Inserting order data...");
     
     const { data: order, error: orderError } = await supabase
       .from('orders')
@@ -248,34 +234,6 @@ app.post("/save-order", async (req, res) => {
       throw new Error(`Failed to save order items: ${itemsError.message}`);
     }
     
-    // If COD and save address is checked, save to user addresses
-    if (shipping_info.saveAddress && user_id) {
-      try {
-        const addressData = {
-          user_id,
-          first_name: shipping_info.firstName,
-          last_name: shipping_info.lastName,
-          email: shipping_info.email,
-          phone: shipping_info.phone,
-          address: shipping_info.address,
-          city: shipping_info.city,
-          state: shipping_info.state,
-          zip_code: shipping_info.zipCode,
-          country: shipping_info.country || 'India',
-          is_default: true
-        };
-        
-        await supabase
-          .from('user_addresses')
-          .insert([addressData]);
-          
-        console.log("✅ Address saved for user");
-      } catch (addressError) {
-        console.warn("⚠️ Failed to save address, but order was saved:", addressError.message);
-        // Don't fail the order if address save fails
-      }
-    }
-    
     const transactionTime = Date.now() - transactionStartTime;
     console.log(`✅ Order saved successfully in ${transactionTime}ms`);
     
@@ -294,125 +252,12 @@ app.post("/save-order", async (req, res) => {
     
   } catch (err) {
     console.error("❌ Save order transaction failed:", err);
-    console.error("Error stack:", err.stack);
     
     return res.status(500).json({
       success: false,
       error: "Failed to save order",
       message: err.message,
       timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/* -------------------- GET USER ORDERS -------------------- */
-app.get("/orders", async (req, res) => {
-  try {
-    const { user_id, limit = 20, page = 1 } = req.query;
-    
-    if (!user_id) {
-      return res.status(400).json({
-        success: false,
-        error: "User ID is required"
-      });
-    }
-    
-    const pageSize = parseInt(limit);
-    const pageNum = parseInt(page);
-    const offset = (pageNum - 1) * pageSize;
-    
-    // Get orders with order items
-    let query = supabase
-      .from('orders')
-      .select(`
-        *,
-        order_items (
-          product_name,
-          quantity,
-          price_at_time,
-          image_url
-        )
-      `)
-      .eq('user_id', user_id)
-      .order('created_at', { ascending: false })
-      .range(offset, offset + pageSize - 1);
-    
-    const { data: orders, error, count } = await query;
-    
-    if (error) throw error;
-    
-    // Get total count for pagination
-    const { count: totalCount } = await supabase
-      .from('orders')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', user_id);
-    
-    return res.json({
-      success: true,
-      data: orders || [],
-      pagination: {
-        page: pageNum,
-        limit: pageSize,
-        total: totalCount || 0,
-        pages: Math.ceil((totalCount || 0) / pageSize)
-      }
-    });
-    
-  } catch (err) {
-    console.error("Get orders error:", err);
-    return res.status(500).json({
-      success: false,
-      error: "Failed to fetch orders",
-      message: err.message
-    });
-  }
-});
-
-/* -------------------- GET PRODUCTS -------------------- */
-app.get("/products", async (req, res) => {
-  try {
-    const { category, brand, limit = 50, page = 1 } = req.query;
-    
-    let query = supabase
-      .from('products')
-      .select('*', { count: 'exact' });
-    
-    // Apply filters if provided
-    if (category) {
-      query = query.ilike('category', `%${category}%`);
-    }
-    
-    if (brand) {
-      query = query.ilike('brand', `%${brand}%`);
-    }
-    
-    const pageSize = parseInt(limit);
-    const pageNum = parseInt(page);
-    const offset = (pageNum - 1) * pageSize;
-    
-    const { data, error, count } = await query
-      .order('created_at', { ascending: false })
-      .range(offset, offset + pageSize - 1);
-    
-    if (error) throw error;
-    
-    return res.json({
-      success: true,
-      data: data || [],
-      pagination: {
-        page: pageNum,
-        limit: pageSize,
-        total: count || 0,
-        pages: Math.ceil((count || 0) / pageSize)
-      }
-    });
-    
-  } catch (err) {
-    console.error("Get products error:", err);
-    return res.status(500).json({
-      success: false,
-      error: "Failed to fetch products",
-      message: err.message
     });
   }
 });
@@ -478,19 +323,23 @@ app.post("/verify-payment", async (req, res) => {
   }
 });
 
-/* -------------------- GET ORDER BY ID -------------------- */
-app.get("/orders/:id", async (req, res) => {
+/* -------------------- GET ORDERS -------------------- */
+app.get("/orders", async (req, res) => {
   try {
-    const { id } = req.params;
-    const { user_id } = req.query;
+    const { user_id, limit = 20, page = 1 } = req.query;
     
-    if (!id) {
+    if (!user_id) {
       return res.status(400).json({
         success: false,
-        error: "Order ID is required"
+        error: "User ID is required"
       });
     }
     
+    const pageSize = parseInt(limit);
+    const pageNum = parseInt(page);
+    const offset = (pageNum - 1) * pageSize;
+    
+    // Get orders with order items
     let query = supabase
       .from('orders')
       .select(`
@@ -502,50 +351,47 @@ app.get("/orders/:id", async (req, res) => {
           image_url
         )
       `)
-      .or(`id.eq.${id},order_number.eq.${id}`);
+      .eq('user_id', user_id)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + pageSize - 1);
     
-    // If user_id provided, ensure the order belongs to the user
-    if (user_id) {
-      query = query.eq('user_id', user_id);
-    }
+    const { data: orders, error, count } = await query;
     
-    const { data: order, error } = await query.single();
+    if (error) throw error;
     
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return res.status(404).json({
-          success: false,
-          error: "Order not found"
-        });
-      }
-      throw error;
-    }
+    // Get total count for pagination
+    const { count: totalCount } = await supabase
+      .from('orders')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', user_id);
     
     return res.json({
       success: true,
-      data: order
+      data: orders || [],
+      pagination: {
+        page: pageNum,
+        limit: pageSize,
+        total: totalCount || 0,
+        pages: Math.ceil((totalCount || 0) / pageSize)
+      }
     });
     
   } catch (err) {
-    console.error("Get order error:", err);
+    console.error("Get orders error:", err);
     return res.status(500).json({
       success: false,
-      error: "Failed to fetch order",
+      error: "Failed to fetch orders",
       message: err.message
     });
   }
 });
 
 /* -------------------- TEST ENDPOINTS -------------------- */
-app.get("/test-db", async (req, res) => {
+app.get("/test", async (req, res) => {
   try {
-    // Test Supabase connection
+    // Test Supabase
     const { data: products, error: productsError } = await supabase
       .from('products')
-      .select('count', { count: 'exact', head: true });
-    
-    const { data: orders, error: ordersError } = await supabase
-      .from('orders')
       .select('count', { count: 'exact', head: true });
     
     // Test Razorpay
@@ -564,7 +410,6 @@ app.get("/test-db", async (req, res) => {
       timestamp: new Date().toISOString(),
       supabase: {
         products: productsError ? `Error: ${productsError.message}` : "Connected",
-        orders: ordersError ? `Error: ${ordersError.message}` : "Connected"
       },
       razorpay: razorpayStatus,
       environment: {
@@ -578,81 +423,6 @@ app.get("/test-db", async (req, res) => {
       success: false,
       error: error.message
     });
-  }
-});
-
-/* -------------------- WEBHOOK FOR RAZORPAY -------------------- */
-app.post("/webhook/razorpay", async (req, res) => {
-  try {
-    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
-    
-    if (!webhookSecret) {
-      console.warn("⚠️ Webhook secret not configured");
-      return res.status(400).json({ error: "Webhook not configured" });
-    }
-    
-    const razorpaySignature = req.headers['x-razorpay-signature'];
-    const body = JSON.stringify(req.body);
-    
-    // Verify webhook signature
-    const expectedSignature = crypto
-      .createHmac('sha256', webhookSecret)
-      .update(body)
-      .digest('hex');
-    
-    if (razorpaySignature !== expectedSignature) {
-      console.error("❌ Webhook signature mismatch");
-      return res.status(400).json({ error: "Invalid signature" });
-    }
-    
-    const event = req.body.event;
-    const payload = req.body.payload;
-    
-    console.log(`🔔 Razorpay webhook received: ${event}`);
-    
-    // Handle different events
-    switch (event) {
-      case 'payment.captured':
-        // Update order status to confirmed
-        if (payload.payment && payload.payment.entity) {
-          const payment = payload.payment.entity;
-          await supabase
-            .from('orders')
-            .update({ 
-              status: 'confirmed',
-              payment_id: payment.id
-            })
-            .eq('payment_id', payment.order_id);
-          console.log(`✅ Order updated for payment: ${payment.id}`);
-        }
-        break;
-        
-      case 'payment.failed':
-        // Update order status to failed
-        if (payload.payment && payload.payment.entity) {
-          const payment = payload.payment.entity;
-          await supabase
-            .from('orders')
-            .update({ 
-              status: 'failed',
-              payment_id: payment.id
-            })
-            .eq('payment_id', payment.order_id);
-          console.log(`❌ Order marked as failed: ${payment.id}`);
-        }
-        break;
-        
-      case 'order.paid':
-        // Order is paid
-        console.log(`💰 Order paid: ${payload.order.entity.id}`);
-        break;
-    }
-    
-    res.json({ received: true });
-    
-  } catch (err) {
-    console.error("Webhook error:", err);
-    res.status(500).json({ error: err.message });
   }
 });
 
@@ -684,15 +454,6 @@ app.listen(PORT, HOST, () => {
 📡 Host: ${HOST}
 🌐 URL: http://${HOST}:${PORT}
 ⏰ Time: ${new Date().toLocaleString()}
-
-📋 Available Endpoints:
-   • GET  /                 - Health check
-   • POST /create-order     - Create Razorpay order
-   • POST /save-order       - Save order to database
-   • GET  /orders          - Get user orders
-   • GET  /products        - Get products
-   • POST /verify-payment  - Verify payment
-   • GET  /test-db         - Test connections
 
 ✅ Server ready to accept requests!
   `);
