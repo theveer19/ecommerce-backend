@@ -86,16 +86,16 @@ app.post("/save-order", async (req, res) => {
     console.log("💾 Saving order...");
     
     const {
-      user_id,
-      items,
-      total_amount,
-      subtotal,
-      shipping_fee,
-      tax,
-      payment_method,
-      payment_id, 
-      shipping_info
-    } = req.body;
+  user_id,
+  items,
+  total_amount,
+  subtotal,
+  shipping_fee,
+  tax,
+  payment_method,
+  payment_details, // ✅ correct name
+  shipping_info
+} = req.body;
 
     // Validate Items
     if (!items || !Array.isArray(items) || items.length === 0) {
@@ -104,8 +104,12 @@ app.post("/save-order", async (req, res) => {
     
     // ✅ CRITICAL FIX: Safe ID Extraction for COD vs Razorpay
     // If Razorpay, extract from object. If COD, ensure null.
-    const actualPaymentId = payment_method === 'razorpay' ? payment_id?.payment_id : null;
-    const razorpayOrderId = payment_method === 'razorpay' ? payment_id?.order_id : null;
+    const actualPaymentId =
+  payment_method === 'razorpay' ? payment_details?.razorpay_payment_id : null;
+
+const razorpayOrderId =
+  payment_method === 'razorpay' ? payment_details?.razorpay_order_id : null;
+
 
     // Prepare Order Data
     const orderData = {
