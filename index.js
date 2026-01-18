@@ -125,7 +125,7 @@ const razorpayOrderId =
       
       status: payment_method === 'cod' ? 'pending' : 'confirmed',
       
-     shipping_address: {
+    shipping_address: JSON.stringify({
   name: `${shipping_info?.firstName || ''} ${shipping_info?.lastName || ''}`.trim(),
   email: shipping_info?.email || null,
   phone: shipping_info?.phone || null,
@@ -134,9 +134,19 @@ const razorpayOrderId =
   state: shipping_info?.state || null,
   pincode: shipping_info?.zipCode || null,
   country: shipping_info?.country || 'India'
-}
+})
+
 
     };
+    if (!shipping_info?.firstName || !shipping_info?.phone || !shipping_info?.address) {
+  return res.status(400).json({
+    success: false,
+    error: "Incomplete shipping details"
+  });
+}
+console.log("ORDER DATA:", JSON.stringify(orderData, null, 2));
+
+
     
     // Insert Order
     const { data: order, error: orderError } = await supabase
