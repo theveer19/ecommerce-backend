@@ -172,10 +172,19 @@ console.log("ORDER DATA:", JSON.stringify(orderData, null, 2));
     const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
     
     if (itemsError) {
-      // Rollback: Delete order if items fail
-      await supabase.from('orders').delete().eq('id', order.id);
-      throw new Error(`Items Insert Failed: ${itemsError.message}`);
-    }
+  console.error("ORDER ITEMS ERROR:", itemsError);
+
+  await supabase.from('orders').delete().eq('id', order.id);
+
+  return res.status(500).json({
+    success: false,
+    error: itemsError.message,
+    details: itemsError.details,
+    hint: itemsError.hint,
+    code: itemsError.code
+  });
+}
+
     
     console.log(`✅ Order saved in ${Date.now() - transactionStartTime}ms`);
     
