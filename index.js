@@ -125,16 +125,17 @@ const razorpayOrderId =
       
       status: payment_method === 'cod' ? 'pending' : 'confirmed',
       
-      shipping_address: {
-        name: `${shipping_info.firstName} ${shipping_info.lastName}`.trim(),
-        email: shipping_info.email,
-        phone: shipping_info.phone,
-        address: shipping_info.address,
-        city: shipping_info.city,
-        state: shipping_info.state,
-        pincode: shipping_info.zipCode,
-        country: shipping_info.country || 'India'
-      }
+     shipping_address: {
+  name: `${shipping_info?.firstName || ''} ${shipping_info?.lastName || ''}`.trim(),
+  email: shipping_info?.email || null,
+  phone: shipping_info?.phone || null,
+  address: shipping_info?.address || null,
+  city: shipping_info?.city || null,
+  state: shipping_info?.state || null,
+  pincode: shipping_info?.zipCode || null,
+  country: shipping_info?.country || 'India'
+}
+
     };
     
     // Insert Order
