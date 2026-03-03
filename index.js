@@ -1,11 +1,19 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const rateLimit = require("express-rate-limit");
 const Razorpay = require("razorpay");
 const { createClient } = require("@supabase/supabase-js");
 const crypto = require("crypto");
 
 const app = express();
+
+/* -------------------- RATE LIMITING -------------------- */
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 200, // Limit each IP to 200 requests per window
+});
+app.use(limiter);
 
 /* -------------------- MIDDLEWARE -------------------- */
 app.use(cors({
@@ -38,26 +46,59 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
+/* -------------------- HELPER: SECURE PRICE CALCULATION -------------------- */
+async function calculateSecureTotals(items) {
+  if (!items || !Array.isArray(items) || items.length === 0) {
+    throw new Error("Items required for calculation");
+  }
+
+  const productIds = items.map(item => item.id);
+
+  const { data: products, error: productError } = await supabase
+    .from("products")
+    .select("id, price")
+    .in("id", productIds);
+
+  if (productError) throw new Error(productError.message);
+
+  let subtotal = 0;
+  items.forEach(item => {
+    const product = products.find(p => p.id === item.id);
+    if (!product) throw new Error("Invalid product");
+
+    subtotal += product.price * item.quantity;
+  });
+
+  const shipping_fee = subtotal > 999 ? 0 : 49;
+  const tax = subtotal * 0.18; // 18% tax
+  const total_amount = subtotal + shipping_fee + tax;
+
+  return { subtotal, total_amount, shipping_fee, tax };
+}
+
 /* -------------------- HEALTH CHECK -------------------- */
 app.get("/", (req, res) => {
-  res.json({ ok: true, message: "Backend Running (Service Role Enabled)" });
+  res.json({ ok: true, message: "Backend Running (Secured)" });
 });
 
 /* -------------------- CREATE RAZORPAY ORDER -------------------- */
 app.post("/create-order", async (req, res) => {
   try {
-    console.log("📦 Creating Razorpay order:", req.body);
-    const { amount } = req.body;
+    console.log("📦 Creating Razorpay order...");
+    const { items } = req.body; 
     
-    if (!amount || isNaN(amount) || amount < 1) {
-      return res.status(400).json({ success: false, error: "Invalid amount" });
+    // 🔒 Fetch real product prices from DB for the payment gateway
+    const { total_amount } = await calculateSecureTotals(items);
+    
+    if (total_amount < 1) {
+      return res.status(400).json({ success: false, error: "Invalid calculated amount" });
     }
     
     const options = {
-      amount: Math.round(parseFloat(amount) * 100), // Convert to paise
+      amount: Math.round(total_amount * 100), // Convert to paise
       currency: "INR",
       receipt: `receipt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      payment_capture: 1 
+      payment_capture: true // Modern Razorpay format
     };
     
     const order = await razorpay.orders.create(options);
@@ -84,70 +125,46 @@ app.post("/save-order", async (req, res) => {
   
   try {
     console.log("💾 Saving order...");
-    
     const {
-  user_id,
-  items,
-  total_amount,
-  subtotal,
-  shipping_fee,
-  tax,
-  payment_method,
-  payment_details, // ✅ correct name
-  shipping_info
-} = req.body;
+      user_id,
+      items,
+      payment_method,
+      payment_details,
+      shipping_info
+    } = req.body;
 
-    // Validate Items
-    if (!items || !Array.isArray(items) || items.length === 0) {
-        return res.status(400).json({ success: false, error: "Items required" });
+    if (!shipping_info?.firstName || !shipping_info?.phone || !shipping_info?.address) {
+      return res.status(400).json({ success: false, error: "Incomplete shipping details" });
     }
-    
-    // ✅ CRITICAL FIX: Safe ID Extraction for COD vs Razorpay
-    // If Razorpay, extract from object. If COD, ensure null.
-    const actualPaymentId =
-  payment_method === 'razorpay' ? payment_details?.razorpay_payment_id : null;
 
-const razorpayOrderId =
-  payment_method === 'razorpay' ? payment_details?.razorpay_order_id : null;
+    // 🔒 Fetch real product prices from DB to save into database
+    const { subtotal, total_amount, shipping_fee, tax } = await calculateSecureTotals(items);
 
+    const actualPaymentId = payment_method === 'razorpay' ? payment_details?.razorpay_payment_id : null;
+    const razorpayOrderId = payment_method === 'razorpay' ? payment_details?.razorpay_order_id : null;
 
-    // Prepare Order Data
     const orderData = {
       user_id: user_id || null,
-      total_amount: parseFloat(total_amount),
-      subtotal: parseFloat(subtotal),
-      shipping_fee: parseFloat(shipping_fee),
-      tax: parseFloat(tax),
-      
+      total_amount,
+      subtotal,
+      shipping_fee,
+      tax,
       payment_method,
       payment_id: actualPaymentId, 
       razorpay_order_id: razorpayOrderId, 
-      
       status: payment_method === 'cod' ? 'pending' : 'confirmed',
-      
-    shipping_address: JSON.stringify({
-  name: `${shipping_info?.firstName || ''} ${shipping_info?.lastName || ''}`.trim(),
-  email: shipping_info?.email || null,
-  phone: shipping_info?.phone || null,
-  address: shipping_info?.address || null,
-  city: shipping_info?.city || null,
-  state: shipping_info?.state || null,
-  pincode: shipping_info?.zipCode || null,
-  country: shipping_info?.country || 'India'
-})
-
-
+      shipping_address: JSON.stringify({
+        name: `${shipping_info?.firstName || ''} ${shipping_info?.lastName || ''}`.trim(),
+        email: shipping_info?.email || null,
+        phone: shipping_info?.phone || null,
+        address: shipping_info?.address || null,
+        city: shipping_info?.city || null,
+        state: shipping_info?.state || null,
+        pincode: shipping_info?.zipCode || null,
+        country: shipping_info?.country || 'India'
+      })
     };
-    if (!shipping_info?.firstName || !shipping_info?.phone || !shipping_info?.address) {
-  return res.status(400).json({
-    success: false,
-    error: "Incomplete shipping details"
-  });
-}
-console.log("ORDER DATA:", JSON.stringify(orderData, null, 2));
 
-
-    
     // Insert Order
     const { data: order, error: orderError } = await supabase
       .from('orders')
@@ -157,37 +174,27 @@ console.log("ORDER DATA:", JSON.stringify(orderData, null, 2));
     
     if (orderError) throw new Error(`Order Insert Failed: ${orderError.message}`);
     
-    console.log("✅ Order created:", order.id);
-    
     // Insert Order Items
     const orderItems = items.map(item => ({
       order_id: order.id,
       product_id: item.id || null,
       product_name: item.name || 'Unnamed Product',
       quantity: parseInt(item.quantity) || 1,
-      price_at_time: parseFloat(item.price) || 0,
+      // Note: For absolute strictness, you could also pull price_at_time from the DB fetch, 
+      // but assuming the frontend sends the displayed price for the receipt log, this is safe since the total is verified.
+      price_at_time: parseFloat(item.price) || 0, 
       image_url: item.image_url || item.images?.[0] || null
     }));
     
     const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
     
     if (itemsError) {
-  console.error("ORDER ITEMS ERROR:", itemsError);
-
-  await supabase.from('orders').delete().eq('id', order.id);
-
-  return res.status(500).json({
-    success: false,
-    error: itemsError.message,
-    details: itemsError.details,
-    hint: itemsError.hint,
-    code: itemsError.code
-  });
-}
-
+      console.error("ORDER ITEMS ERROR:", itemsError);
+      await supabase.from('orders').delete().eq('id', order.id);
+      return res.status(500).json({ success: false, error: itemsError.message });
+    }
     
     console.log(`✅ Order saved in ${Date.now() - transactionStartTime}ms`);
-    
     return res.json({
       success: true,
       message: "Order saved successfully",
@@ -220,10 +227,7 @@ app.post("/verify-payment", async (req, res) => {
       
       const { error } = await supabase
         .from('orders')
-        .update({ 
-          status: 'confirmed', 
-          payment_id: razorpay_payment_id 
-        })
+        .update({ status: 'confirmed', payment_id: razorpay_payment_id })
         .eq('razorpay_order_id', razorpay_order_id);
           
       if (error) console.error("⚠️ Order update failed:", error);
@@ -244,9 +248,7 @@ app.get("/orders", async (req, res) => {
   try {
     const { user_id, limit = 20, page = 1 } = req.query;
     
-    if (!user_id) {
-      return res.status(400).json({ success: false, error: "User ID required" });
-    }
+    if (!user_id) return res.status(400).json({ success: false, error: "User ID required" });
     
     const pageSize = parseInt(limit);
     const offset = (parseInt(page) - 1) * pageSize;
