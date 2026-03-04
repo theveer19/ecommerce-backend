@@ -22,9 +22,8 @@ app.use(cors({
     "https://ecommerce-frontend-taupe-mu.vercel.app",
     "https://onet.co.in",
     "https://www.onet.co.in", 
-    "http://127.0.0.1:3000",
-    "http://10.204.161.58:3000",
-    "http://10.127.149.58:3000"
+    "https://onet.co.in",
+    "https://api.onet.co.in",
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
